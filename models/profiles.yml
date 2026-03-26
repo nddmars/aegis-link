@@ -1,0 +1,30 @@
+# profiles.yml — dbt connection profile for Aegis-Analytics
+#
+# Place this file in the models/ directory and run dbt with:
+#   cd models && dbt run --profiles-dir .
+#
+# Alternatively, copy the aegis_sqlite block to ~/.dbt/profiles.yml and run
+# dbt normally from the models/ directory.
+#
+# Requires: pip install dbt-core dbt-sqlite
+
+aegis_sqlite:
+  target: dev
+  outputs:
+    dev:
+      type: sqlite
+      threads: 1
+
+      # The database identifier (filename without the .db extension).
+      database: aegis_intel
+
+      # SQLite's default schema is always "main".
+      schema: main
+
+      # Absolute path mapping: schema → path to the .db file.
+      # Update this path if your AEGIS_DB_PATH env var points elsewhere.
+      schemas_and_paths:
+        main: /home/user/aegis-link/aegis_intel.db
+
+      # Directory containing the .db file.
+      schema_directory: /home/user/aegis-link/

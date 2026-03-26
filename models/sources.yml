@@ -1,0 +1,35 @@
+version: 2
+
+sources:
+  - name: aegis_raw
+    description: >
+      Raw threat intelligence collected by Aegis-Pulse (RSS scraper).
+      Rows are enriched in-place by Aegis-Brain (AI enrichment).
+    database: aegis_intel
+    schema: main
+    tables:
+      - name: raw_intel
+        description: >
+          One row per unique article URL. is_processed tracks pipeline state:
+          0 = awaiting Brain enrichment, 1 = enriched, -1 = enrichment failed.
+        columns:
+          - name: id
+            description: Auto-incrementing primary key.
+          - name: source_url
+            description: Unique article URL (UNIQUE constraint — idempotent inserts).
+          - name: title
+            description: Article headline extracted from the RSS feed.
+          - name: pub_date
+            description: Publication date as an ISO-8601 string.
+          - name: raw_text
+            description: Full article body text stripped of HTML.
+          - name: stix_json
+            description: >
+              STIX 2.1 bundle JSON produced by Aegis-Brain. NULL until
+              is_processed = 1.
+          - name: processed_at
+            description: ISO-8601 timestamp of when Brain last updated this row.
+          - name: is_processed
+            description: >
+              Processing state flag.
+              0 = unprocessed, 1 = successfully enriched, -1 = permanently failed.
