@@ -2,8 +2,8 @@
 brain/processor.py — Aegis-Brain AI Enrichment Layer.
 
 Fetches unprocessed rows from raw_intel, sends each article to Claude with a
-structured prompt, validates the STIX 2.1 JSON response, and persists the
-enriched data back to the database.
+structured CTI analyst prompt, validates the STIX 2.1 JSON response, and
+persists the enriched data back to the database.
 
 Failure handling
 ────────────────
@@ -11,29 +11,28 @@ Failure handling
 - If the retry also fails the row is marked is_processed = -1 (permanently
   skipped) so the next run does not attempt it again.
 
+Structured logging
+──────────────────
+Every significant event is emitted as a JSON log line via common.logger so
+the enrichment pipeline produces a searchable, audit-quality trail.
+Key ``action`` values: enrich_start, enrich_row, stix_success, stix_retry,
+stix_failed, api_error, enrich_complete.
+
 Usage:
-    python -m brain.processor          # run from project root
-    # or import and call:
+    python -m brain.processor
     from brain.processor import run_processing
     count = run_processing(batch_size=5)
 """
 
 import json
-import logging
 from datetime import datetime, timezone
 
 import anthropic
-from dotenv import load_dotenv
 
 from common.db import get_connection
+from common.logger import get_logger
 
-load_dotenv()
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-)
-logger = logging.getLogger("aegis.brain")
+logger = get_logger("aegis.brain")
 
 # ── Model configuration ───────────────────────────────────────────────────────
 MODEL = "claude-opus-4-6"
@@ -81,7 +80,7 @@ def _validate_stix_bundle(raw: str) -> dict:
     Parse and minimally validate a STIX 2.1 bundle JSON string.
 
     Raises:
-        ValueError: if the string is not valid JSON or is missing required fields.
+        ValueError: if the string is not valid JSON or missing required fields.
         json.JSONDecodeError: if json.loads() fails.
     """
     data = json.loads(raw)
@@ -104,7 +103,7 @@ def _call_claude(title: str, raw_text: str, *, retry: bool = False) -> str:
 
     Args:
         title:    Article headline.
-        raw_text: Article body (will be sliced to MAX_TEXT_CHARS).
+        raw_text: Article body (sliced to MAX_TEXT_CHARS).
         retry:    If True, uses the stricter retry system prompt.
     """
     client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
@@ -127,13 +126,8 @@ def _call_claude(title: str, raw_text: str, *, retry: bool = False) -> str:
 # ── Database helpers ──────────────────────────────────────────────────────────
 
 def _fetch_unprocessed(conn, batch_size: int) -> list:
-    """
-    Return up to *batch_size* rows that have not yet been enriched.
-
-    Skips rows with is_processed = -1 (permanently failed) and rows without
-    any raw_text to enrich.
-    """
-    rows = conn.execute(
+    """Return up to *batch_size* rows awaiting enrichment."""
+    return conn.execute(
         """
         SELECT id, title, raw_text
         FROM   raw_intel
@@ -145,7 +139,6 @@ def _fetch_unprocessed(conn, batch_size: int) -> list:
         """,
         (batch_size,),
     ).fetchall()
-    return rows
 
 
 def _mark_success(conn, row_id: int, stix_json: str) -> None:
@@ -187,16 +180,26 @@ def run_processing(batch_size: int = 10) -> int:
     Returns:
         Number of rows successfully enriched in this run.
     """
-    logger.info("Aegis-Brain: starting enrichment (batch_size=%d)", batch_size)
+    logger.info(
+        "Enrichment run started",
+        extra={"action": "enrich_start", "batch_size": batch_size, "model": MODEL},
+    )
 
     with get_connection() as conn:
         rows = _fetch_unprocessed(conn, batch_size)
 
     if not rows:
-        logger.info("Aegis-Brain: no unprocessed rows found — nothing to do.")
+        logger.info(
+            "No unprocessed rows found",
+            extra={"action": "enrich_start", "queued": 0},
+        )
         return 0
 
-    logger.info("Aegis-Brain: %d row(s) to process", len(rows))
+    logger.info(
+        "Rows queued for enrichment",
+        extra={"action": "enrich_start", "queued": len(rows)},
+    )
+
     processed = 0
 
     for row in rows:
@@ -204,50 +207,77 @@ def run_processing(batch_size: int = 10) -> int:
         title: str = row["title"]
         raw_text: str = row["raw_text"]
 
-        logger.info("Processing row id=%d: %r", row_id, title)
+        logger.info(
+            "Processing article",
+            extra={"action": "enrich_row", "row_id": row_id, "title": title},
+        )
 
         # ── First attempt ────────────────────────────────────────────────────
         try:
             raw_response = _call_claude(title, raw_text, retry=False)
             stix_data = _validate_stix_bundle(raw_response)
+
         except (json.JSONDecodeError, ValueError) as exc:
             logger.warning(
-                "Row id=%d — first attempt failed (%s). Retrying with stricter prompt.",
-                row_id, exc,
+                "STIX parse failed on first attempt — retrying",
+                extra={
+                    "action": "stix_retry",
+                    "row_id": row_id,
+                    "error": str(exc),
+                },
             )
 
             # ── Retry with stricter prompt ────────────────────────────────
             try:
                 raw_response = _call_claude(title, raw_text, retry=True)
                 stix_data = _validate_stix_bundle(raw_response)
+
             except (json.JSONDecodeError, ValueError) as retry_exc:
                 logger.error(
-                    "Row id=%d — retry also failed (%s). Marking as permanently failed.",
-                    row_id, retry_exc,
+                    "STIX parse failed on retry — marking as permanently failed",
+                    extra={
+                        "action": "stix_failed",
+                        "row_id": row_id,
+                        "error": str(retry_exc),
+                    },
                 )
                 with get_connection() as conn:
                     _mark_failed(conn, row_id)
                 continue
+
         except anthropic.APIError as api_exc:
-            logger.error("Row id=%d — Claude API error: %s. Skipping.", row_id, api_exc)
+            logger.error(
+                "Claude API error — skipping row",
+                extra={"action": "api_error", "row_id": row_id, "error": str(api_exc)},
+            )
             continue
 
         # ── Persist normalised STIX JSON ──────────────────────────────────
         stix_json_str = json.dumps(stix_data, ensure_ascii=False)
+        object_count = len(stix_data.get("objects", []))
+
         with get_connection() as conn:
             _mark_success(conn, row_id, stix_json_str)
 
         logger.info(
-            "Row id=%d enriched — %d STIX object(s) extracted.",
-            row_id,
-            len(stix_data.get("objects", [])),
+            "Article enriched successfully",
+            extra={
+                "action": "stix_success",
+                "row_id": row_id,
+                "title": title,
+                "stix_objects": object_count,
+            },
         )
         processed += 1
 
     logger.info(
-        "Aegis-Brain: enrichment complete — %d/%d row(s) processed successfully.",
-        processed,
-        len(rows),
+        "Enrichment run complete",
+        extra={
+            "action": "enrich_complete",
+            "processed": processed,
+            "total": len(rows),
+            "failed": len(rows) - processed,
+        },
     )
     return processed
 
