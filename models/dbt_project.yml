@@ -1,0 +1,25 @@
+name: aegis_analytics
+version: "1.0.0"
+config-version: 2
+
+# The profile that dbt uses for this project.
+# Matches the top-level key in profiles.yml.
+profile: aegis_sqlite
+
+# Directories
+model-paths: ["."]        # models/ is the dbt project root; .sql files are here
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Model configuration
+models:
+  aegis_analytics:
+    staged_leads:
+      # Materialise as a SQL VIEW so it always reflects the current state of
+      # raw_intel without a manual table refresh step.
+      +materialized: view
+      # SQLite has a single implicit schema called "main"; setting it here
+      # prevents dbt-sqlite from trying to create a separate schema.
+      +schema: main
