@@ -1,0 +1,21 @@
+# ── Aegis-Pulse (Collection Layer) ──────────────────────────────────────────
+feedparser==6.0.11
+beautifulsoup4==4.12.3
+requests==2.31.0
+lxml==5.2.1
+
+# ── Validation ───────────────────────────────────────────────────────────────
+pydantic==2.7.1
+
+# ── Aegis-Brain (AI Enrichment) ──────────────────────────────────────────────
+anthropic==0.28.0
+
+# ── Aegis-Bridge (MCP Server) ────────────────────────────────────────────────
+mcp==1.3.0
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+
+# ── Aegis-Analytics (DBT) — install separately or uncomment below ─────────────
+# dbt-core==1.8.3
+# dbt-sqlite==1.8.0
